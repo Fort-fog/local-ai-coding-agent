@@ -52,6 +52,18 @@ class EvaluatorValidator:
     
     def validate(self, result: EvalResult) -> EvalResult:
         """Apply validation rules to an evaluation result."""
+        # Failed planner-editor subtasks must block a green evaluation.
+        failed_subtasks = self.orch.frame.metadata.get("failed_subtasks") or []
+        if result.passed and failed_subtasks:
+            return replace(
+                result,
+                passed=False,
+                summary=(
+                    "Planner-editor subtasks failed; task is not verified: "
+                    + ", ".join(str(path) for path in failed_subtasks)
+                ),
+            )
+
         # Rule 1: Check for missing requested files
         if result.passed:
             missing = self.orch._missing_requested_files()

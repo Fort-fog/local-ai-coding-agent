@@ -75,6 +75,7 @@ class CoderAgent:
             await self._transition_to_done()
             return
 
+        self.orch.frame.metadata["failed_subtasks"] = []
         reflexion_lesson = self.orch.frame.reflections[-1] if self.orch.frame.reflections else ""
 
         for idx, item in enumerate(checklist):
@@ -104,6 +105,10 @@ class CoderAgent:
             )
 
             self.orch.log.info("Finished task %d/%d for %s: success=%s", idx + 1, len(checklist), path, success)
+            if not success:
+                self.orch.frame.metadata["failed_subtasks"].append(
+                    str(path or f"checklist item {idx + 1}")
+                )
             self.orch.emit("tool_result", step=idx + 1, tool=f"editor:{path}", ok=success, content=f"Subtask completed for {path}")
 
         await self._transition_to_done()
