@@ -16,7 +16,7 @@ class AgentConfig:
     LSP_DIAGNOSTICS_TIMEOUT = 2.0
 
     MUTATING_TOOLS = frozenset({
-        "write_file", "search_replace", "replace_all",
+        "write_file", "append_file", "search_replace", "replace_all",
         "add_docstring", "add_parameter", "rename_symbol",
     })
 

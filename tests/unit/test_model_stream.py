@@ -1,7 +1,9 @@
 import json
 
 import httpx
+import pytest
 
+from agent.errors import ModelError
 from agent.model.client import OllamaClient
 
 
@@ -35,6 +37,7 @@ async def test_chat_stream_accumulates_tokens_and_tool_calls():
     assert "".join(tokens) == "Hello"
     assert resp.content == "Hello"
     assert resp.tool_calls and resp.tool_calls[0]["function"]["name"] == "finish"
+    assert resp.raw["done"] is True
 
 
 async def test_chat_stream_survives_malformed_lines():
@@ -43,10 +46,29 @@ async def test_chat_stream_survives_malformed_lines():
         {"done": True, "message": {"content": ""}},
     )
 
-    client = OllamaClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=body)))
+    client = OllamaClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, content=body))
+    )
     try:
         resp = await client.chat_stream([{"role": "user", "content": "x"}])
     finally:
         await client.close()
 
     assert resp.content == "ok"
+    assert resp.raw["done"] is True
+
+
+async def test_chat_stream_rejects_end_without_final_done_chunk():
+    body = _ndjson(
+        {"message": {"content": "partial response"}},
+        {"message": {"content": " that must not be accepted"}},
+    )
+
+    client = OllamaClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, content=body))
+    )
+    try:
+        with pytest.raises(ModelError, match="before receiving the final done=true chunk"):
+            await client.chat_stream([{"role": "user", "content": "x"}])
+    finally:
+        await client.close()

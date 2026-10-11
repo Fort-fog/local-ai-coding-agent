@@ -815,8 +815,8 @@ async def execute_tool_safely(
     file_locks: Dict[Path, asyncio.Lock],
 ) -> ToolResult:
     """Execute a tool with safety checks and mutation tracking."""
-    if call.name in ["write_file", "search_replace"]:
-        tool_path = call.arguments.get("path", path)
+    tool_path = call.arguments.get("path", path)
+    if call.name in ["write_file", "append_file", "search_replace"]:
         if not security.validate_path(tool_path):
             return ToolResult(False, f"Security error: Path '{tool_path}' is not allowed")
 
@@ -831,14 +831,15 @@ async def execute_tool_safely(
                 "`run_command` does NOT count against this budget. "
                 "Then run verification tests and call finish.",
             )
-        async with _lock_file(path, orch.workspace, file_locks):
+        lock_path = tool_path if call.arguments.get("path") else path
+        async with _lock_file(lock_path, orch.workspace, file_locks):
             # Apply auto-correctors BEFORE writing the file (disabled via SKIP_AUTOCORRECT=1 for A/B comparison)
-            if call.name == "write_file" and path.endswith(".py") and not os.environ.get("SKIP_AUTOCORRECT"):
+            if call.name == "write_file" and lock_path.endswith(".py") and not os.environ.get("SKIP_AUTOCORRECT"):
                 content = call.arguments.get("content", "")
-                corrected = _autocorrect_file(content, path, orch.workspace)
+                corrected = _autocorrect_file(content, lock_path, orch.workspace)
                 if corrected != content:
                     call.arguments["content"] = corrected
-                    orch.log.info("Applied auto-correctors to %s", path)
+                    orch.log.info("Applied auto-correctors to %s", lock_path)
             result = await orch.tools.execute(call.name, call.arguments)
             if result.ok:
                 execution_context.mutations += 1

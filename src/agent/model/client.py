@@ -155,12 +155,7 @@ class OllamaClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         on_token: Optional[Callable[[str], None]] = None,
     ) -> ChatResponse:
-        """Stream a chat response, invoking ``on_token`` for each content token.
-
-        The full content and any native ``tool_calls`` are accumulated and
-        returned as a :class:`ChatResponse`, so callers get live output *and* a
-        complete message to parse tool calls from.
-        """
+        """Stream a chat response and reject streams missing Ollama's final chunk."""
         payload: Dict[str, Any] = {
             "model": self.model_name,
             "messages": messages,
@@ -174,6 +169,7 @@ class OllamaClient:
         content_parts: List[str] = []
         tool_calls: List[Dict[str, Any]] = []
         final_raw: Dict[str, Any] = {}
+        received_done = False
         await self._throttle()
         try:
             async with self._client.stream("POST", f"{self.host}/api/chat", json=payload) as resp:
@@ -187,6 +183,7 @@ class OllamaClient:
                     try:
                         chunk = json.loads(line)
                     except json.JSONDecodeError:
+                        logger.warning("Ignoring malformed Ollama stream line")
                         continue
                     message = chunk.get("message", {}) or {}
                     token = message.get("content", "")
@@ -196,15 +193,25 @@ class OllamaClient:
                             on_token(token)
                     if message.get("tool_calls"):
                         tool_calls.extend(message["tool_calls"])
-                    if chunk.get("done"):
+                    if chunk.get("done") is True:
                         final_raw = chunk
+                        received_done = True
                         break
         except httpx.HTTPError as exc:
             raise ModelError(f"Ollama stream request failed: {exc}") from exc
 
+        if not received_done:
+            raise ModelError(
+                "Ollama chat stream ended before receiving the final done=true chunk"
+            )
+
         res = ChatResponse("".join(content_parts), tool_calls, final_raw)
-        logger.debug("Ollama stream chat response complete. content=%r tool_calls=%r raw=%s",
-                     res.content, res.tool_calls, json.dumps(res.raw))
+        logger.debug(
+            "Ollama stream chat response complete. content=%r tool_calls=%r raw=%s",
+            res.content,
+            res.tool_calls,
+            json.dumps(res.raw),
+        )
         return res
 
     async def generate_stream(self, messages: List[Dict[str, Any]]) -> AsyncIterator[str]:

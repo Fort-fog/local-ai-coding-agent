@@ -5,7 +5,8 @@ from pathlib import Path
 
 ALL_TOOL_DESCRIPTIONS = {
     "read_file": "read_file(path, start_line?, end_line?): Read a file, or a 1-indexed line range.",
-    "write_file": "write_file(path, content): Create or overwrite a file.",
+    "write_file": "write_file(path, content): Create or overwrite a file. For large files, write a compact first portion, then append chunks.",
+    "append_file": "append_file(path, content): Append the next ordered text chunk to a file (max 3000 characters). Use for large CSS/JS/HTML; never resend prior content. Read the file back to verify.",
     "edit_lines": "edit_lines(path, start_line, end_line, search, replace): Replace line range start_line to end_line (inclusive) matching search with replace. Fast & drift-safe.",
     "search_replace": "search_replace(path, search, replace): Replace ONE exact text block in a file.",
     "replace_all": "replace_all(path, old, new): Replace EVERY occurrence of a string in ONE file.",

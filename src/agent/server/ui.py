@@ -5,6 +5,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Coding Agent Dashboard</title>
     <style>
         body {
@@ -13,19 +14,22 @@ INDEX_HTML = """<!DOCTYPE html>
             font-family: system-ui, sans-serif;
             margin: 0;
             display: flex;
-            height: 100vh;
+            min-height: 100vh;
         }
         #sidebar {
             width: 320px;
+            flex-shrink: 0;
             background-color: #1e1e1e;
             border-right: 1px solid #333;
             padding: 20px;
             display: flex;
             flex-direction: column;
             gap: 14px;
+            box-sizing: border-box;
         }
         #main {
             flex: 1;
+            min-width: 0;
             padding: 20px;
             display: flex;
             flex-direction: column;
@@ -62,8 +66,14 @@ INDEX_HTML = """<!DOCTYPE html>
             overflow-x: auto;
             border: 1px solid #30363d;
             white-space: pre-wrap;
+            overflow-wrap: anywhere;
         }
-        #feed { display: flex; flex-direction: column; gap: 6px; margin-bottom: 15px; }
+        #feed {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 15px;
+        }
         .entry {
             padding: 8px 12px;
             border-radius: 6px;
@@ -87,6 +97,35 @@ INDEX_HTML = """<!DOCTYPE html>
         .btn-run:disabled { background-color: #30363d; cursor: not-allowed; }
         .btn-approve { background-color: #28a745; color: white; }
         .btn-deny { background-color: #dc3545; color: white; }
+        #token-stats {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin: 8px 0 12px;
+        }
+        .stat-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 12px;
+            min-width: 0;
+        }
+        .stat-label { color: #8b949e; font-size: 0.8em; }
+        .stat-value {
+            font-size: clamp(1.1rem, 2vw, 1.6rem);
+            font-weight: 700;
+            margin-top: 4px;
+            overflow-wrap: anywhere;
+        }
+        #speed-note { margin-bottom: 8px; }
+        @media (max-width: 760px) {
+            body { flex-direction: column; }
+            #sidebar { width: 100%; border-right: 0; border-bottom: 1px solid #333; }
+            #main { padding: 14px; }
+            #token-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+            .stat-card { padding: 8px; }
+            .stat-label { font-size: 0.72em; }
+        }
     </style>
 </head>
 <body>
@@ -112,18 +151,102 @@ INDEX_HTML = """<!DOCTYPE html>
 
         <div id="feed"></div>
 
+        <h4>Generation speed</h4>
+        <div id="token-stats">
+            <div class="stat-card">
+                <div class="stat-label">Current speed</div>
+                <div class="stat-value" id="current-speed">0 tok/s</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Average speed</div>
+                <div class="stat-value" id="average-speed">0 tok/s</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Estimated tokens</div>
+                <div class="stat-value" id="token-count">0</div>
+            </div>
+        </div>
+        <div class="muted" id="speed-note">
+            Waiting for generation. Live speed is estimated from received text
+            (about 4 characters per token); it is not Ollama's exact token count.
+        </div>
         <h4>Model Token Stream Output:</h4>
         <pre id="token-pane">Stream waiting to start...</pre>
     </div>
 
     <script>
-        // Open WebSocket connection back to the server (forward the session token
-        // carried in this page's URL, which the server requires to authorize).
         const _token = new URLSearchParams(window.location.search).get("token");
         const _proto = window.location.protocol === "https:" ? "wss" : "ws";
         const _q = _token ? ("?token=" + encodeURIComponent(_token)) : "";
         const ws = new WebSocket(`${_proto}://${window.location.host}/ws${_q}`);
         let currentApprovalId = null;
+
+        let streamStartedAt = 0;
+        let receivedChars = 0;
+        let tokenSamples = [];
+        let streamActive = false;
+
+        function formatNumber(value) {
+            return Math.max(0, value).toLocaleString(undefined, {
+                maximumFractionDigits: 1
+            });
+        }
+
+        function resetTokenStats() {
+            streamStartedAt = 0;
+            receivedChars = 0;
+            tokenSamples = [];
+            streamActive = true;
+            document.getElementById("current-speed").innerText = "0 tok/s";
+            document.getElementById("average-speed").innerText = "0 tok/s";
+            document.getElementById("token-count").innerText = "0";
+            document.getElementById("speed-note").innerText =
+                "Live estimate: about 4 characters per token. Exact Ollama token statistics are reported after each model call.";
+        }
+
+        function recordText(text) {
+            const now = performance.now();
+            if (!streamStartedAt) streamStartedAt = now;
+            const chars = text.length;
+            receivedChars += chars;
+            tokenSamples.push({time: now, chars: chars});
+
+            const cutoff = now - 3000;
+            while (tokenSamples.length && tokenSamples[0].time < cutoff) {
+                tokenSamples.shift();
+            }
+
+            document.getElementById("token-count").innerText =
+                formatNumber(receivedChars / 4);
+            updateTokenStats();
+        }
+
+        function updateTokenStats() {
+            const now = performance.now();
+            if (!streamStartedAt || !receivedChars) return;
+
+            const elapsedSeconds = Math.max((now - streamStartedAt) / 1000, 0.001);
+            const average = (receivedChars / 4) / elapsedSeconds;
+
+            const windowMs = Math.min(2000, now - streamStartedAt);
+            const cutoff = now - windowMs;
+            let recentChars = 0;
+            for (const sample of tokenSamples) {
+                if (sample.time >= cutoff) recentChars += sample.chars;
+            }
+            const current = windowMs > 0
+                ? (recentChars / 4) / (windowMs / 1000)
+                : 0;
+
+            document.getElementById("current-speed").innerText =
+                formatNumber(current) + " tok/s";
+            document.getElementById("average-speed").innerText =
+                formatNumber(average) + " tok/s";
+        }
+
+        setInterval(() => {
+            if (streamActive) updateTokenStats();
+        }, 500);
 
         function addEntry(cls, text) {
             const feed = document.getElementById("feed");
@@ -151,18 +274,20 @@ INDEX_HTML = """<!DOCTYPE html>
                 const pane = document.getElementById("token-pane");
                 if (pane.innerText === "Stream waiting to start...") pane.innerText = "";
                 pane.innerText += data.text;
+                recordText(data.text || "");
             }
 
             else if (data.event === "approval_required") {
                 currentApprovalId = data.id;
-                document.getElementById("approval-text").innerText = `Approve Action: ${data.action} - ${data.detail}`;
+                document.getElementById("approval-text").innerText =
+                    `Approve Action: ${data.action} - ${data.detail}`;
                 document.getElementById("approval-pane").style.display = "block";
             }
 
-            // --- richer event vocabulary (the extension Chapter 42 points to) ---
             else if (data.event === "run_started") {
                 document.getElementById("feed").innerHTML = "";
                 document.getElementById("token-pane").innerText = "Stream waiting to start...";
+                resetTokenStats();
                 addEntry("plan", "▶ Task: " + data.task);
             }
             else if (data.event === "plan") {
@@ -176,20 +301,32 @@ INDEX_HTML = """<!DOCTYPE html>
             }
             else if (data.event === "evaluation") {
                 addEntry(data.passed ? "eval-ok" : "eval-bad",
-                         (data.passed ? "✔ Evaluation passed — " : "✘ Evaluation failed — ") + data.summary);
+                    (data.passed ? "✔ Evaluation passed — " : "✘ Evaluation failed — ") + data.summary);
             }
             else if (data.event === "no_progress") {
                 addEntry("eval-bad", "↻ Repeated " + data.tool
-                         + " with no progress — stopping this phase and evaluating.");
+                    + " with no progress — stopping this phase and evaluating.");
             }
             else if (data.event === "give_up") {
                 addEntry("eval-bad", "■ Retry budget exhausted after " + data.retries
-                         + (data.retries === 1 ? " retry" : " retries")
-                         + ". Stopping instead of looping."
-                         + (data.summary ? "\\n" + data.summary : ""));
+                    + (data.retries === 1 ? " retry" : " retries")
+                    + ". Stopping instead of looping."
+                    + (data.summary ? "\\n" + data.summary : ""));
             }
             else if (data.event === "run_finished") {
+                streamActive = false;
+                updateTokenStats();
+
                 const s = data.stats || {};
+                if (typeof s.tokens_per_second === "number" && s.tokens_per_second > 0) {
+                    document.getElementById("speed-note").innerText =
+                        "Run finished. Ollama-reported average across model calls: "
+                        + formatNumber(s.tokens_per_second) + " tok/s. Live figures above were estimates.";
+                } else {
+                    document.getElementById("speed-note").innerText =
+                        "Run finished. Live figures above are estimates from received text, not exact token counts.";
+                }
+
                 addEntry("done", "● Session ended: " + data.final_state.toUpperCase()
                     + (s.total_tokens ? ("   ·   " + s.model_calls + " model calls · "
                        + s.total_tokens + " tokens · " + (s.total_seconds || 0).toFixed(1) + "s · $0.00") : ""));
@@ -199,18 +336,24 @@ INDEX_HTML = """<!DOCTYPE html>
                 document.getElementById("run-btn").innerText = "Run task";
             }
             else if (data.event === "error") {
+                streamActive = false;
                 addEntry("err", "Error: " + data.message);
                 document.getElementById("run-btn").disabled = false;
                 document.getElementById("run-btn").innerText = "Run task";
             }
         };
 
+        ws.onerror = function() {
+            addEntry("err", "WebSocket connection error.");
+        };
+
         function startRun() {
             const task = document.getElementById("task-input").value.trim();
             if (!task) { alert("Please type a task first."); return; }
             const btn = document.getElementById("run-btn");
-            btn.disabled = true; btn.innerText = "Running…";
-            ws.send(JSON.stringify({ "type": "run", "task": task, "options": {} }));
+            btn.disabled = true;
+            btn.innerText = "Running…";
+            ws.send(JSON.stringify({"type": "run", "task": task, "options": {}}));
         }
 
         function sendApproval(approved) {

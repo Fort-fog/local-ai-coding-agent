@@ -133,6 +133,43 @@ async def solve_constraints(
     return ToolResult(False, solution.message)
 
 
+async def append_file(ctx: HandlerContext, path: str, content: str) -> ToolResult:
+    """Append one bounded text chunk to a workspace file using the atomic writer."""
+    from .file_edit_handlers import safe_write_path
+
+    if not isinstance(content, str) or not content:
+        return ToolResult(False, "append_file requires non-empty text content.")
+    if len(content) > 3000:
+        return ToolResult(
+            False,
+            f"Chunk is {len(content)} characters; append_file accepts at most 3000. "
+            "Split the content into smaller complete chunks and retry.",
+        )
+
+    target = safe_write_path(ctx, path)
+    if target.exists():
+        if not target.is_file():
+            return ToolResult(False, f"Cannot append to non-file path: {path}")
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            return ToolResult(False, f"Cannot read existing text file {path}: {exc}")
+    else:
+        existing = ""
+
+    combined = existing + content
+    target.parent.mkdir(parents=True, exist_ok=True)
+    await ctx.reg._atomic_commit_and_refresh(target, combined)
+    ctx.policy.audit.record(
+        "append_file", path=path, bytes=len(content.encode("utf-8")),
+        total_bytes=len(combined.encode("utf-8")),
+    )
+    return ToolResult(
+        True,
+        f"Appended {len(content)} characters to {path}; total length is {len(combined)} characters.",
+    )
+
+
 async def write_file(ctx: HandlerContext, path: str, content: str) -> ToolResult:
     """Handler for ``write_file``."""
     from .utils import normalize_async_scaffolding

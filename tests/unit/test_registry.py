@@ -18,6 +18,34 @@ async def test_write_then_read(registry, workspace):
     assert "print(1)" in res.content
 
 
+async def test_append_file_creates_and_appends_in_chunks(registry, workspace):
+    first = await registry.execute(
+        "append_file", {"path": "assets/style.css", "content": "body {\\n"}
+    )
+    assert first.ok
+    second = await registry.execute(
+        "append_file", {"path": "assets/style.css", "content": "  margin: 0;\\n}\\n"}
+    )
+    assert second.ok
+    assert (workspace / "assets/style.css").read_text() == "body {\\n  margin: 0;\\n}\\n"
+
+
+async def test_append_file_rejects_oversized_chunk(registry, workspace):
+    result = await registry.execute(
+        "append_file", {"path": "large.txt", "content": "x" * 3001}
+    )
+    assert not result.ok
+    assert not (workspace / "large.txt").exists()
+
+
+async def test_append_file_rejects_path_escape(registry):
+    result = await registry.execute(
+        "append_file", {"path": "../outside.txt", "content": "blocked"}
+    )
+    assert not result.ok
+    assert "outside" in result.content.lower()
+
+
 async def test_read_missing(registry):
     res = await registry.execute("read_file", {"path": "nope.py"})
     assert not res.ok

@@ -9,6 +9,7 @@ Detection order (first match wins):
 from __future__ import annotations
 
 import ast
+from html.parser import HTMLParser
 import hashlib
 import logging
 import os
@@ -19,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple, Set, Dict
+from urllib.parse import unquote, urlsplit
 import re
 
 logger = logging.getLogger(__name__)
@@ -822,6 +824,121 @@ def _find_closest_method(wrong_name: str, actual_methods) -> Optional[str]:
     return None
 
 
+
+_WEB_RESOURCE_SUFFIXES = {
+    ".html", ".htm", ".css", ".js", ".mjs", ".json", ".xml",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
+    ".ico", ".woff", ".woff2", ".ttf", ".otf", ".webmanifest",
+    ".pdf",
+}
+_WEB_RESOURCE_LINK_RELS = {
+    "stylesheet", "icon", "manifest", "preload", "modulepreload",
+    "apple-touch-icon", "prefetch",
+}
+
+
+def _validate_web_resources(workspace: Path) -> List[str]:
+    """Find missing local resources referenced by a static HTML project."""
+    workspace = Path(workspace)
+    excluded = EXCLUDED_DIRS
+    html_files = []
+
+    for path in workspace.rglob("*.html"):
+        try:
+            relative = path.relative_to(workspace)
+        except ValueError:
+            continue
+        if excluded.intersection(relative.parts[:-1]) or not path.is_file():
+            continue
+        html_files.append(path)
+
+    # Do not change evaluation behavior for projects without HTML entry points.
+    if not any(path.name.lower() == "index.html" for path in html_files):
+        return []
+
+    class ResourceParser(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.references = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            rels = set((attrs.get("rel") or "").lower().split())
+
+            href = attrs.get("href")
+            if href:
+                parsed = urlsplit(href.strip())
+                suffix = Path(unquote(parsed.path)).suffix.lower()
+                if (
+                    tag == "link"
+                    and (rels.intersection(_WEB_RESOURCE_LINK_RELS)
+                         or suffix in _WEB_RESOURCE_SUFFIXES)
+                ) or (
+                    tag in {"a", "area"}
+                    and suffix in _WEB_RESOURCE_SUFFIXES
+                ):
+                    self.references.append(href.strip())
+
+            src = attrs.get("src")
+            if src and tag in {
+                "script", "img", "source", "video", "audio",
+                "track", "iframe", "embed", "input",
+            }:
+                self.references.append(src.strip())
+
+    missing = []
+    for html_path in sorted(html_files):
+        try:
+            document = html_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            missing.append(
+                f"{html_path.relative_to(workspace)}: cannot read HTML ({exc})"
+            )
+            continue
+
+        parser = ResourceParser()
+        try:
+            parser.feed(document)
+            parser.close()
+        except Exception as exc:
+            missing.append(
+                f"{html_path.relative_to(workspace)}: HTML parsing failed ({exc})"
+            )
+            continue
+
+        for reference in parser.references:
+            parsed = urlsplit(reference)
+            # External URLs, anchors, data/blob URLs, and non-file schemes
+            # are not local workspace resources.
+            if (
+                not parsed.path
+                or parsed.scheme
+                or parsed.netloc
+                or reference.startswith("//")
+            ):
+                continue
+
+            resource_path = Path(unquote(parsed.path))
+            if resource_path.is_absolute():
+                target = workspace / str(resource_path).lstrip("/")
+            else:
+                target = html_path.parent / resource_path
+
+            if target.is_dir():
+                target = target / "index.html"
+
+            if not target.is_file():
+                expected = Path(
+                    __import__("os").path.relpath(target, workspace)
+                ).as_posix()
+                missing.append(
+                    f"{html_path.relative_to(workspace)}: missing local "
+                    f"resource '{reference}' (expected {expected})"
+                )
+
+    return missing
+
+
 @dataclass
 class EvalResult:
     """The outcome of an evaluation: pass/fail, a summary, detail, and whether tests actually ran."""
@@ -1074,6 +1191,17 @@ class Evaluator:
         # Auto-correct test/implementation mismatches before running tests (disabled via SKIP_AUTOCORRECT=1)
         if not os.environ.get("SKIP_AUTOCORRECT"):
             _autocorrect_test_mismatches(workspace)
+
+        # A successful compileall fallback cannot verify HTML resource links.
+        # Reject broken local web assets before tests or fallback can report green.
+        web_errors = _validate_web_resources(workspace)
+        if web_errors:
+            return EvalResult(
+                False,
+                "Web project has missing or unreadable local resources",
+                "\n".join(web_errors),
+                ran_tests=False,
+            )
 
         command = self._detect_command(workspace)
         if command is None:

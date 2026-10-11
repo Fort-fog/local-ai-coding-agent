@@ -151,21 +151,27 @@ class ToolParser:
             is_balanced = cand["is_balanced"]
 
             if not is_balanced:
-                logger.warning(
-                    "Parser dropped truncated candidate chunk: JSON decoding failed (unbalanced brackets). "
-                    "Chunk: %r",
-                    content
-                )
-                continue
-
-            try:
-                data = self._robust_decode(content)
-            except ValueError as exc:
-                logger.warning(
-                    "Parser dropped candidate chunk: JSON decoding failed. Error: %s. Chunk: %r",
-                    exc, content
-                )
-                continue
+                # The lightweight scanner can misclassify malformed-but-repairable
+                # JSON strings containing HTML, JavaScript, or raw docstring quotes.
+                # Try the existing conservative decoder before discarding the call.
+                try:
+                    data = self._robust_decode(content)
+                except ValueError:
+                    logger.warning(
+                        "Parser dropped truncated candidate chunk: JSON decoding failed (unbalanced brackets). "
+                        "Chunk: %r",
+                        content
+                    )
+                    continue
+            else:
+                try:
+                    data = self._robust_decode(content)
+                except ValueError as exc:
+                    logger.warning(
+                        "Parser dropped candidate chunk: JSON decoding failed. Error: %s. Chunk: %r",
+                        exc, content
+                    )
+                    continue
 
             objects = []
             if isinstance(data, list):

@@ -172,6 +172,22 @@ class ToolRegistry:
             _sh.write_file,
         ))
         self.register(Tool(
+            "append_file",
+            "Append one text chunk to a workspace file, creating it if absent. "
+            "Use for large CSS, JavaScript, HTML, or text files that may exceed one model response. "
+            "Send at most 3000 characters per call. First create the initial portion with write_file, "
+            "then append subsequent portions in order. Never resend earlier content.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path relative to the workspace"},
+                    "content": {"type": "string", "description": "Next text chunk, maximum 3000 characters"},
+                },
+                "required": ["path", "content"],
+            },
+            _sh.append_file,
+        ))
+        self.register(Tool(
             "search_replace",
             "Replace an exact block of text in a file. The search block must be unique. "
             "`search` is LITERAL text, NOT a regular expression — copy it verbatim from "

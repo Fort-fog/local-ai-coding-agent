@@ -42,6 +42,50 @@ def test_evaluator_fails_when_tests_fail(local_sandbox, policy, workspace):
     assert result.ran_tests
 
 
+def test_evaluator_rejects_missing_web_resources(local_sandbox, policy, workspace):
+    (workspace / "css").mkdir()
+    (workspace / "js").mkdir()
+    (workspace / "css/style.css").write_text("body { margin: 0; }")
+    (workspace / "js/script.js").write_text("console.log('ready');")
+    (workspace / "index.html").write_text(
+        '<link rel="stylesheet" href="css/style.css">'
+        '<script src="js/script.js"></script>'
+        '<img src="placeholder.png">'
+        '<script src="https://cdn.example.test/library.js"></script>'
+    )
+
+    ev = Evaluator(local_sandbox, policy)
+    result = ev.evaluate(workspace)
+
+    assert not result.passed
+    assert not result.ran_tests
+    assert "missing or unreadable local resources" in result.summary
+    assert "placeholder.png" in result.details
+    assert "css/style.css" not in result.details
+    assert "cdn.example.test" not in result.details
+
+
+def test_web_resource_validation_accepts_existing_and_external_resources(workspace):
+    from agent.evaluation.evaluator import _validate_web_resources
+
+    (workspace / "css").mkdir()
+    (workspace / "js").mkdir()
+    (workspace / "images").mkdir()
+    (workspace / "css/style.css").write_text("body { margin: 0; }")
+    (workspace / "js/script.js").write_text("console.log('ready');")
+    (workspace / "images/hero.png").write_bytes(b"test")
+    (workspace / "index.html").write_text(
+        '<link rel="stylesheet" href="css/style.css">'
+        '<script src="js/script.js"></script>'
+        '<img src="images/hero.png">'
+        '<a href="https://example.test/page">External</a>'
+        '<script src="https://cdn.example.test/library.js"></script>'
+        '<a href="#section">Anchor</a>'
+    )
+
+    assert _validate_web_resources(workspace) == []
+
+
 def test_evaluator_syntax_check_without_tests(local_sandbox, policy, workspace):
     (workspace / "ok.py").write_text("x = 1\n")
     ev = Evaluator(local_sandbox, policy)
