@@ -150,3 +150,58 @@ def test_saw_truncated_call_false_on_complete_and_prose():
     assert len(parser.parse(complete)) == 1          # the complete call still parses
     assert parser.saw_truncated_call("just some prose, no tool call") is False
     assert parser.saw_truncated_call("") is False
+
+
+def test_parse_native_rejects_invalid_json_arguments(caplog):
+    import logging
+
+    parser = ToolParser()
+    native = [
+        {"function": {"name": "read_file", "arguments": "{not valid JSON"}},
+    ]
+    with caplog.at_level(logging.WARNING):
+        calls = parser.parse_native(native)
+
+    assert calls == []
+    assert any("arguments JSON decoding failed" in record.message for record in caplog.records)
+
+
+def test_parse_native_rejects_non_object_arguments():
+    parser = ToolParser()
+    native = [
+        {"function": {"name": "read_file", "arguments": '["unexpected", "array"]'}},
+        {"function": {"name": "read_file", "arguments": '"unexpected string"'}},
+        {"function": {"name": "read_file", "arguments": "null"}},
+    ]
+
+    assert parser.parse_native(native) == []
+
+
+def test_parse_rejects_invalid_string_arguments(caplog):
+    import logging
+
+    parser = ToolParser()
+    text = '{"name": "read_file", "arguments": "{not valid JSON"}'
+    with caplog.at_level(logging.WARNING):
+        calls = parser.parse(text)
+
+    assert calls == []
+    assert any("arguments JSON decoding failed" in record.message for record in caplog.records)
+
+
+def test_parse_rejects_non_object_decoded_arguments():
+    parser = ToolParser()
+    for encoded in ('["unexpected"]', '"unexpected string"', "null", "42"):
+        text = '{"name": "read_file", "arguments": ' + encoded + '}'
+        assert parser.parse(text) == []
+
+
+def test_parse_keeps_repair_for_valid_native_string_arguments():
+    parser = ToolParser()
+    native = [
+        {"function": {"name": "read_file", "arguments": '{"path": "a.py",}'}},
+    ]
+
+    calls = parser.parse_native(native)
+    assert len(calls) == 1
+    assert calls[0].arguments == {"path": "a.py"}

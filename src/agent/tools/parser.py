@@ -224,9 +224,18 @@ class ToolParser:
                 try:
                     args = self._robust_decode(args)
                 except ValueError as exc:
-                    logger.warning("Native tool call arguments JSON decoding failed: %s. Raw: %r", exc, args)
-                    args = {"_raw": args}
-            out.append(ToolCall(name=name, arguments=args or {}))
+                    logger.warning(
+                        "Native tool call ignored: arguments JSON decoding failed: %s. Raw: %r",
+                        exc, args,
+                    )
+                    continue
+            if not isinstance(args, dict):
+                logger.warning(
+                    "Native tool call ignored: arguments must decode to an object, got %s",
+                    type(args).__name__,
+                )
+                continue
+            out.append(ToolCall(name=name, arguments=args))
         return out
 
     def _robust_decode(self, content: str) -> Any:
@@ -364,21 +373,29 @@ class ToolParser:
                 obj
             )
             return None
-        args = obj.get("arguments")
-        if args is None:
-            args = obj.get("args")
-        if args is None:
-            # Treat remaining keys as arguments (minus the name key).
-            args = {k: v for k, v in obj.items() if k not in {"name", "tool", "tool_name"}}
+        if "arguments" in obj:
+            args = obj["arguments"]
+        elif "args" in obj:
+            args = obj["args"]
+        else:
+            # Legacy format: treat remaining keys as arguments.
+            args = {
+                k: v for k, v in obj.items()
+                if k not in {"name", "tool", "tool_name"}
+            }
         if isinstance(args, str):
             try:
                 args = self._robust_decode(args)
             except ValueError as exc:
                 logger.warning(
-                    "Parser decoded string arguments as fallback but JSON parsing failed: %s. Raw: %r",
-                    exc, args
+                    "Parser ignored tool call: arguments JSON decoding failed: %s. Raw: %r",
+                    exc, args,
                 )
-                args = {"_raw": args}
+                return None
         if not isinstance(args, dict):
-            args = {"value": args}
+            logger.warning(
+                "Parser ignored tool call: arguments must be an object, got %s",
+                type(args).__name__,
+            )
+            return None
         return ToolCall(name=name, arguments=args)
