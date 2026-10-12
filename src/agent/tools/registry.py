@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -521,11 +522,50 @@ class ToolRegistry:
     def get_descriptions(self) -> List[Dict[str, Any]]:
         return [t.schema() for t in self.tools.values()]
 
+    @staticmethod
+    def _validate_required_args(tool: Tool, args: Dict[str, Any]) -> List[str]:
+        """Return names of required parameters (per the tool's own JSON schema)
+        that are missing from *args*.  Structural validation only — no type checks.
+        """
+        params = tool.parameters or {}
+        required = params.get("required") or []
+        props = params.get("properties") or {}
+        missing = []
+        for name in required:
+            # Optional-by-default (has a schema-level default) → not an error if absent.
+            if name in props and isinstance(props[name], dict) and "default" in props[name]:
+                continue
+            if args.get(name) is None:
+                missing.append(name)
+        return missing
+
     async def execute(self, tool_name: str, args: Dict[str, Any]) -> ToolResult:
         logger.debug("Executing tool %s args=%s", tool_name, args)
         tool = self.tools.get(tool_name)
         if tool is None:
             return ToolResult(False, f"Unknown tool: {tool_name}")
+        missing = self._validate_required_args(tool, args or {})
+        if missing:
+            props = (tool.parameters or {}).get("properties") or {}
+            expected = {
+                k: v.get("type", "string") if isinstance(v, dict) else "any"
+                for k, v in props.items()
+            }
+            payload = json.dumps(
+                {
+                    "error": "missing_required_arguments",
+                    "tool": tool_name,
+                    "missing": missing,
+                    "provided": sorted((args or {}).keys()),
+                    "expected_schema": expected,
+                    "hint": (
+                        f"Call {tool_name} again including all required "
+                        f"argument(s): {', '.join(missing)}."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+            return ToolResult(False, payload)
         try:
             if tool.needs_ctx:
                 kwargs = {"ctx": self._ctx(), **(args or {})}
